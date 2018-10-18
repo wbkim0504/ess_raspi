@@ -1,6 +1,6 @@
 all:
-	#$(CC) -Wall -Werror ess_server.c -O2 -lpthread -o ess_server
-	$(CC) -Wall ess_server.c -O2 -lpthread -o ess_server
+	#$(CC) -Wall -Werror ess_raspi.c -O2 -lpthread -o ess_raspi
+	$(CC) -Wall ess_raspi.c mpu_conio.c -O2 -lpthread -o ess_raspi
 
 clean:
-	$(RM) -rf ess_server
+	$(RM) -rf ess_raspi
