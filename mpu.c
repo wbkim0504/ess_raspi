@@ -48,8 +48,13 @@ void *server_msg(void *arg)
 		//strip_newline(buf);
 		printf("[server msg]:%s\n", buf);
 	}
+	/* server connection closed */
+	close(server_sockfd);
+	server_sockfd = -1;
+	mpu_cfg.pms_connection = 0;
 }
 
+// -----------------------------------------------------------------
 int server_connect()
 {
 	struct sockaddr_in serveraddr;
@@ -89,11 +94,6 @@ int server_connect()
 // -----------------------------------------------------------------
 void data_comm()
 {
-
-	static int mpu_header_size = 10;
-	int mpu_body_size = 0;
-	int mpu_packet_size = 0;
-
 	long int start_time;
 	long int time_diff;
 	struct timespec gettime_now;
@@ -101,112 +101,136 @@ void data_comm()
 	clock_gettime(CLOCK_REALTIME, &gettime_now);
 	start_time = gettime_now.tv_nsec;
 
-	/* maximum allowable SPU */
-	if (mpu_cfg.num_SPU > MAX_SPU)
-	{
-		mpu_cfg.num_SPU = MAX_SPU;
-	}
 
-	/* SPU data */
+	/* mpu packet header */
+	unsigned char packet_type = 0x10;
+	unsigned char mpu_status = 0x00;
 
+	mpu_msg_buff[0] = packet_type;
 	/*
-	if (mpu_cfg.emulator_enable)
-	{
-		for (int i=0; i<mpu_cfg.num_SPU; i++)
-		{
-			char spi_cmd = mpu_cfg.cmd_SPU + i;
-			data_size[i] = spi_emul(spi_cmd, &spu_msg_buff[i][0], MAX_BUFF_SIZE, &mpu_cfg, &emul_cfg);
-			
-			mpu_body_size += data_size[i];
-
-			if (data_size[i] > 0)
-			{
-				spu_status[i] = 1;
-			}
-		}
-	}
-	else
-	{
-	}
-	*/
-
-	uint8	spu_msg_buff[MAX_BUFF_SIZE];
-	memset(spu_msg_buff, 0, MAX_BUFF_SIZE);
-
-	//int data_size = spu_comm(&spu_msg_buff[0], MAX_BUFF_SIZE, &mpu_cfg);
-	int data_size = 0;
-	mpu_body_size += data_size;
-
-	mpu_packet_size = mpu_header_size + mpu_body_size;
-
-	/* MPU message packet */
-	/*
-	mpu_msg_buff[0] = (uint8) mpu_cfg.type_MPU + mpu_cfg.mpu_id;
-	mpu_msg_buff[1] = (uint8) (mpu_body_size >> 24);
-	mpu_msg_buff[2] = (uint8) (mpu_body_size >> 16);
-	mpu_msg_buff[3] = (uint8) (mpu_body_size >> 8);
-	mpu_msg_buff[4] = (uint8) (mpu_body_size);
-
-	mpu_msg_buff[5] = (uint8) mpu_cfg.version;
-	mpu_msg_buff[6] = 0x00;		// MSG_TYPE (TBD)
-	mpu_msg_buff[7] = mpu_msg_count++;
-	mpu_msg_buff[8] = 0x00;		// error_code;
-	mpu_msg_buff[9] = (uint8) mpu_cfg.num_SPU;
-	mpu_msg_buff[10] = (uint8) mpu_cfg.num_HIP;
-	mpu_msg_buff[11] = 0x00;
-	*/
-	/*
-	mpu_msg_buff[0] = (uint8) mpu_cfg.type_MPU + mpu_cfg.mpu_id;
-	mpu_msg_buff[1] = (uint8) (mpu_body_size >> 8);
-	mpu_msg_buff[2] = (uint8) (mpu_body_size);
-
-	mpu_msg_buff[3] = (uint8) mpu_cfg.version;
-	mpu_msg_buff[4] = (uint8) mpu_cfg.num_SPU;
-	*/
-	mpu_msg_buff[0] = 0x10;
 	mpu_msg_buff[1] = (uint8) (mpu_packet_size >> 24);
 	mpu_msg_buff[2] = (uint8) (mpu_packet_size >> 16);
 	mpu_msg_buff[3] = (uint8) (mpu_packet_size >> 8);
 	mpu_msg_buff[4] = (uint8) (mpu_packet_size);
-	mpu_msg_buff[5] = (uint8) mpu_cfg.version;
+	*/
+	mpu_msg_buff[5] = 0x00;		// reserved
 
 	mpu_msg_buff[6] = mpu_cfg.mpu_id;
-	mpu_msg_buff[7] = 0x00;		// error_code;
+	mpu_msg_buff[7] = mpu_status;
 	mpu_msg_buff[8] = (uint8) mpu_cfg.num_SPU;
-	//mpu_msg_buff[9] = (uint8) mpu_cfg.num_HIP;
+	mpu_msg_buff[9] = (uint8) mpu_cfg.num_HIP;
 
-	int pos = mpu_header_size;
+	int mpu_header_size = 10;
+	int msg_curr_pos = mpu_header_size;
 
-	// SPU data
-	/*
-	for (int i=0; i<mpu_cfg.num_SPU; i++)
+	/* mpu packet body */
+	int mpu_body_size = 0;
+	int mpu_packet_size = 0;
+
+	/* SPU data */
+	int spu_header_size = 9;
+	int spu_packet_size = 0;
+
+	uint8	spu_msg_buff[MAX_BUFF_SIZE];
+	memset(spu_msg_buff, 0, MAX_BUFF_SIZE);
+
+	int spu_count = 0;
+	for (int i=0; i<MAX_SPU; i++)
 	{
-		if (data_size[i] > 0)
+		if (mpu_cfg.SPU_info[i])
 		{
-			memcpy(&mpu_msg_buff[pos], &spu_msg_buff[i][0], data_size[i]);
-			pos += data_size[i];
+			spu_count++;
+
+			int spu_status = 0;		// 0:normal, 1:error
+			int spu_body_size = 0;
+
+			int curr_dev_id = SPI_DEV_SPU1 + i;
+			int data_size = micom_get_data (curr_dev_id, SPI_ECU_NONE, SPI_CMD_DATA, 
+										spu_msg_buff, MAX_BUFF_SIZE, &mpu_cfg);
+		
+			if (mpu_cfg.CRC_status)
+			{
+				spu_body_size = data_size;
+			}
+			else
+			{
+				/* CRC error */
+				spu_status = 1;
+				spu_body_size = 0;
+			}
+
+			/* spu header */
+			unsigned char spu_header[9];
+			spu_header[0] = i+1;
+			spu_header[1] = (uint8) (spu_body_size >> 8);
+			spu_header[2] = (uint8) (spu_body_size);
+			spu_header[3] = spu_status;
+
+			spu_header[4] = mpu_cfg.ECU_info[i][0];
+			spu_header[5] = mpu_cfg.ECU_info[i][1];
+			spu_header[6] = mpu_cfg.ECU_info[i][2] + mpu_cfg.ECU_info[i][3];
+			spu_header[7] = mpu_cfg.ECU_info[i][4];
+			spu_header[8] = mpu_cfg.ECU_info[i][5];
+			
+			spu_packet_size = spu_header_size + spu_body_size;
+			
+			memcpy(&mpu_msg_buff[msg_curr_pos], spu_header, spu_header_size);
+			msg_curr_pos += spu_header_size;
+
+			if (spu_body_size > 0)
+			{
+				memcpy(&mpu_msg_buff[msg_curr_pos], spu_msg_buff, spu_body_size);
+				msg_curr_pos += spu_body_size;
+			}
+		}
+
+	}
+
+	/* HIP data */
+	int hip_count = 0;
+	for (int i=0; i<MAX_HIP; i++)
+	{
+		if (mpu_cfg.HIP_info[i])
+		{
+			hip_count++;
+
+			int hip_status = 0;		// 0:normal, 1:error
+			int hip_body_size = 0;
+
+			int curr_dev_id = SPI_DEV_HIP1 + i;
+			int data_size = micom_get_data (curr_dev_id, SPI_ECU_NONE, SPI_CMD_DATA, 
+										spu_msg_buff, MAX_BUFF_SIZE, &mpu_cfg);
+		
+			if (mpu_cfg.CRC_status)
+			{
+				if (data_size > 0)
+				{
+					memcpy(&mpu_msg_buff[msg_curr_pos], spu_msg_buff, data_size);
+					msg_curr_pos += data_size;
+				}
+			}
+			else
+			{
+				/* CRC error */
+			}
+
 		}
 	}
-	*/
+	mpu_packet_size = msg_curr_pos;
 
-	if (mpu_msg_count >= 100)
-		mpu_msg_count = 0;
+	mpu_msg_buff[1] = (uint8) (mpu_packet_size >> 24);
+	mpu_msg_buff[2] = (uint8) (mpu_packet_size >> 16);
+	mpu_msg_buff[3] = (uint8) (mpu_packet_size >> 8);
+	mpu_msg_buff[4] = (uint8) (mpu_packet_size);
+
 
 	/* send pms message */
-	if (mpu_cfg.pms_connection == 0)
-	{
-		// connect server
-		if (server_connect() > 0)
-			mpu_cfg.pms_connection = 1;
-		else
-			mpu_cfg.pms_connection = 0;
-	}
-
 	if (mpu_cfg.pms_connection)
 	{
-		printf("sending %d byte data to server\n", pos);
+		printf("\n");
+		printf("sending %d byte data to server\n", mpu_packet_size);
 
-		if (write(server_sockfd, mpu_msg_buff, pos) <= 0) {
+		if (write(server_sockfd, mpu_msg_buff, mpu_packet_size) <= 0) {
 			perror("write error : ");
 			mpu_cfg.pms_connection = 0;
 		}
@@ -218,31 +242,41 @@ void data_comm()
 	if (time_diff < 0)
 		time_diff += 1e9;
 
-	//printf("communication time : %.3f msec \n", time_diff*(1e-6));
+	printf("\n");
+	printf("communication time : %.3f msec \n", time_diff*(1e-6));
+	printf("server connection : %s\n", mpu_cfg.pms_connection ? "OK" : "NO");
+
+	/* server connect */
+	if (mpu_cfg.pms_connection == 0)
+	{
+		printf("connecting to pms server ... \n");
+
+		// connect server
+		if (server_connect() > 0)
+			mpu_cfg.pms_connection = 1;
+		else
+			mpu_cfg.pms_connection = 0;
+	}
 }
 
 // -----------------------------------------------------------------
-int alarm_count = 0;
+//int alarm_count = 0;
 int tick_count = 0;
 
 void fn_alarm(int sig_num)
 {
 	if (sig_num == SIGALRM)
 	{
-		//data_comm_test();
-		if (alarm_count++ >= 10)
+		//printf("fn_alarm called : %d \n", tick_count++);
+		if (tick_count++ == 0)
 		{
-			//printf("alarm : count = %02d \r\n", tick_count++);
-			data_comm();
-			//data_comm_test();
-
-			alarm_count = 0;
-
-			if (tick_count >= 10)
+			if (get_curr_menu() == MPU_MENU_RUN)
 			{
-				tick_count = 0;
-			}
+				data_comm();
+				mpu_display_update(&mpu_cfg);
+			}		
 		}
+		tick_count %= 10;
 	}
 }
 
@@ -257,7 +291,7 @@ int main(int argc, char *argv[])
 		return (EXIT_FAILURE);
 	}
 	mpu_cfg.pms_connection = 0;
-	mpu_cfg.spi_status = 0;
+	mpu_cfg.CRC_status = 0;
 
 	//set_config(&mpu_cfg);
 	
@@ -271,7 +305,7 @@ int main(int argc, char *argv[])
 	*/
 
 	/* print mpu running info */
-	printf("mpu_cfg.num_SPU = %d\n", mpu_cfg.num_SPU);
+	//printf("mpu_cfg.num_SPU = %d\n", mpu_cfg.num_SPU);
 
 	/* init console & alarm */
 	set_conio_terminal_mode();
